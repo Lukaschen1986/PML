@@ -1,0 +1,154 @@
+---
+title: "the Analysis on Classe"
+author: "Lukas Chen"
+output: html_document
+---
+
+## 1. summary 
+#### This paper focused on predicting the manner in which the 6 participants did their exercise. I used some of the well-known machine learning algorithm to build the predictions, such as Decision Tree, SVM, bagging method and so on. And then I choosing one of the algorithm, and took the cross-validation to estimate the stability of the model. At last, I used three models to predict the test data set and vote the final result based on each prediction
+
+## 2. getting data
+```{r}
+load("D:/kuaipan/TEST/Data Science/train.RData")
+load("D:/kuaipan/TEST/Data Science/test.RData")
+```
+
+## 3. data cleaning
+```{r}
+missing_filter <- function(df.test, df.train){
+      df.test.new <- df.test[colSums(is.na(df.test)) < 10]
+      df.train.new <- df.train[names(df.train) %in% names(df.test.new)]
+      res <- list(df.test.new, df.train.new)
+      return(res)
+}
+res <- missing_filter(df.test = test, df.train = train)
+test.new <- res[[1]]
+train.new <- cbind(res[[2]], data.frame(train$classe)) 
+
+# get rid of the missing data, and make sure the train set and test set have the same variables basicly
+```
+
+## 4. variable exploring
+```{r}
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(rpart.plot)
+
+train.new <- train.new[,-c(3:5)];train.new <- train.new[,-c(1)]
+
+fit.rpart <- train(train.classe ~ ., data = train.new, method = "rpart")
+fit.Imp <- varImp(fit.rpart$finalModel, scale = T, surrogates = F, competes = T)
+
+library(rattle)
+
+fancyRpartPlot(fit.rpart$finalModel)
+
+fit.Imp$Variable <- row.names(fit.Imp)
+fit.Imp2 <- arrange(fit.Imp, desc(Overall))
+ggplot(fit.Imp2[1:14,], aes(x = Variable, y = Overall)) + geom_bar(aes(fill = Overall), stat = "identity") + coord_flip() 
+
+# use rpart to fit a model first, and save the important variables for choosing models
+```
+
+## 5. model choosing
+```{r}
+train.model <- cbind(train.new[names(train.new) %in% fit.Imp[1:14,2]], train.new$train.classe)
+names(train.model)[15] <- "classe"
+
+fit.rpart <- tryCatch(train(classe ~ ., data = train.model, method = "rpart",
+                            trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3),
+                            tuneGrid = data.frame(.cp = seq(from = 0.001, to = 0.1, length = 10))), error = function(e) return(NA))
+pred.rpart <- predict(fit.rpart, newdata = train.model)
+err.rpart <- sum(train.model$classe == pred.rpart)/length(train.model$classe); err.rpart 
+confusionMatrix(pred.rpart, train.model$classe)
+
+library(ipred)
+fit.bagging <- tryCatch(bagging(classe ~ ., data = train.model), error = function(e) return(NA))
+pred.bagging <- predict(fit.bagging, newdata = train.model)
+err.bagging <- sum(train.model$classe == pred.bagging)/length(train.model$classe); err.bagging 
+confusionMatrix(pred.bagging, train.model$classe)
+
+library(e1071)
+fit.svm <- tryCatch(svm(classe ~ ., data = train.model), error = function(e) return(NA))
+pred.svm <- predict(fit.svm, newdata = train.model)
+err.svm <- sum(train.model$classe == pred.svm)/length(train.model$classe); err.svm 
+confusionMatrix(pred.svm, train.model$classe)
+
+# use rpart, bagging and svm to build the model on the train set, and we can see that bagging has the highest accuracy, but maybe overfitting
+```
+
+## 6. cross-validation
+```{r}
+cross_validation <- function(df, cross = 10){
+  if(!is.data.frame(df)){
+    stop("The data isn't formatted as dataframe!")
+  }
+  if(cross == 1){
+    stop("The cross could not be 1!")
+  }
+  if(nrow(df)/cross < 30){
+    print("The result may not be vary specific!")
+  }
+  
+  index.1 <- 1:nrow(df)
+  set.seed(1)
+  index.2 <- sample(x = index.1, size = nrow(df))
+  index.3 <- rep(x = 1:cross, time = ceiling(nrow(df)/cross))[index.1]
+  
+  err.train <- rep(0,cross)
+  err.test <- rep(0,cross)
+  
+  for(i in 1:cross){
+    test.index <- index.1[index.3 == i]
+    train <- df[-test.index, ]
+    test <- df[test.index, ]
+    
+    fit <- tryCatch(svm(classe ~ ., data = train.model), error = function(e) return(NA))
+    pred.train <- predict(fit, newdata = train)
+    pred.test <- predict(fit, newdata = test)
+    
+    err.train[i] <- sum(train$classe == pred.train)/length(train$classe)
+    err.test[i] <- sum(test$classe == pred.test)/length(test$classe)
+  }
+  res <- list(err.train = err.train, err.test = err.test)
+  return(res)
+}
+cv <- cross_validation(df = train.model, cross = 10)
+cv$err.train
+mean(cv$err.train)
+cv$err.test
+mean(cv$err.test)
+# take cross_validation with svm to estimate the stability of the model
+```
+
+## 7. predict on test set
+```{r}
+pred.test1 <- predict(fit.rpart, newdata = test.new)
+pred.test1
+
+pred.test2 <- predict(fit.bagging, newdata = test.new)
+pred.test2
+
+pred.test2 <- predict(fit.svm, newdata = test.new)
+pred.test2
+
+res <- data.frame(pred.rpart = pred.test1, pred.bagging = pred.test2, pred.svm = pred.test2)
+
+pred.final <- c()
+for(i in 1:nrow(res)){
+      if(res[i,1] == res[i,2] | res[i,1] == res[i,3]){
+          pred.final[i] <- res[i,1]
+      }else{
+          pred.final[i] <- res[i,2]
+      }
+}
+res$pred.final <- pred.final
+res$final[res$pred.final == 1] <- "A"
+res$final[res$pred.final == 2] <- "B"
+res$final[res$pred.final == 3] <- "C"
+res$final[res$pred.final == 4] <- "D"
+res$final[res$pred.final == 5] <- "E"
+res
+# used three models to predict the test data set and vote the final result based on each prediction
+```
